@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>CSV to LSS Converter</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    #outputContainer { margin-top: 20px; }
+    textarea { width: 100%; height: 300px; }
+  </style>
+</head>
+<body>
+
+<h1>CSV to LSS Converter</h1>
+<p>Select a CSV file (in the specified format) to convert it into a .lss file:</p>
+
+<input type="file" id="csvFileInput" accept=".csv" />
+<button id="convertBtn">Convert to LSS</button>
+
+<div id="outputContainer" style="display:none;">
+  <h2>LSS Output:</h2>
+  <p>Below is the generated LSS. You can also download it.</p>
+  <textarea id="lssOutput"></textarea>
+  <br />
+  <button id="downloadBtn">Download .lss</button>
+</div>
+
+<script>
+/**
+ * We’ll parse the CSV rows into JS objects. We can do this using a
+ * simple FileReader + manual split, or you could integrate a library
+ * like Papa Parse. For simplicity, I'll do a quick manual approach
+ * assuming your CSV doesn't contain commas inside fields, etc.
+ */
+
+document.getElementById('convertBtn').addEventListener('click', handleConvert);
+
+function handleConvert() {
+  const fileInput = document.getElementById('csvFileInput');
+  if (!fileInput.files || fileInput.files.length === 0) {
+    alert('Please select a CSV file first!');
+    return;
+  }
+  const file = fileInput.files[0];
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const csvText = e.target.result;
+    // Parse the CSV text
+    const csvRows = csvText.split(/\r?\n/).filter(r => r.trim() !== '');
+    // The first row is the header
+    const headers = csvRows[0].split(',');
+    // The subsequent rows are data
+    const dataRows = csvRows.slice(1);
+
+    // We'll store groups, questions, answers in arrays for building LSS
+    const groups = [];
+    const questions = [];
+    const answers = []; // For MCQ or Likert
+    let currentQuestionId = null;
+
+    // We'll need to maintain ID counters for LSS
+    let gidCounter = 1000;
+    let qidCounter = 2000;
+    let aidCounter = 3000;
+
+    // We can store a map groupName -> gid, if we want to keep them unique
+    const groupMap = {};
+
+    // Helper to interpret CSV question_type => LSS question type
+    function mapQuestionType(qt) {
+      // This is simplistic. You can expand or customize as needed.
+      if (qt.toLowerCase() === 'mcq') return 'L';
+      if (qt.toLowerCase() === 'text') return 'T';
+      if (qt.toLowerCase() === 'numerical') return 'N';
+      if (qt.toLowerCase().includes('likert')) return 'F'; // or "A"
+      return 'S'; // fallback "short free text" if unknown
+    }
+
+    // For each data row, parse the columns
+    dataRows.forEach(row => {
+      const cols = row.split(',');
+      // Because the original header is known, let's map them:
+      // type,question,question_options,construct,question_type,question_group
+      const type = cols[0]?.trim();
+      const questionText = cols[1]?.trim();
+      const questionOption = cols[2]?.trim();
+      const construct = cols[3]?.trim();
+      const questionType = cols[4]?.trim();
+      const questionGroup = cols[5]?.trim();
+
+      if (type === 'group') {
+        // Create/track a group
+        gidCounter++;
+        const newGroup = {
+          gid: gidCounter,
+          name: questionText || questionGroup, // e.g., "Pre Test"
+        };
+        groups.push(newGroup);
+        groupMap[newGroup.name] = newGroup.gid;
+
+      } else if (type === 'question') {
+        // Create a new question
+        qidCounter++;
+        currentQuestionId = qidCounter; // So subsequent mcq_options attach to it
+
+        // Find the group ID
+        let theGroupId = null;
+        if (groupMap[questionGroup]) {
+          theGroupId = groupMap[questionGroup];
+        } else {
+          // fallback: create a group on the fly
+          gidCounter++;
+          theGroupId = gidCounter;
+          groups.push({ gid: gidCounter, name: questionGroup });
+          groupMap[questionGroup] = theGroupId;
+        }
+
+        questions.push({
+          qid: currentQuestionId,
+          gid: theGroupId,
+          text: questionText,
+          lsType: mapQuestionType(questionType),
+          mandatory: 'N',   // defaulting to non-mandatory
+          construct: construct // just storing if you want to do something
+        });
+
+      } else if (type === 'mcq_option') {
+        // This is an answer option for the last question
+        if (!currentQuestionId) {
+          console.warn('MCQ option found but no question encountered yet!');
+          return;
+        }
+        aidCounter++;
+        answers.push({
+          aid: aidCounter,
+          qid: currentQuestionId,
+          code: 'A' + (aidCounter), // some unique code
+          text: questionOption
+        });
+      }
+    });
+
+    // Now that we have groups, questions, answers, let's build an LSS string
+    const lssString = buildLss(groups, questions, answers);
+    
+    // Show the result
+    document.getElementById('outputContainer').style.display = 'block';
+    const outputTA = document.getElementById('lssOutput');
+    outputTA.value = lssString;
+  };
+  reader.readAsText(file);
+}
+
+/**
+ * Build an extremely simplified LSS. The real LSS has many sections:
+ * <surveys>, <groups>, <questions>, <answers>, <question_l10ns>, <answer_l10ns>, etc.
+ * We'll create a minimal (not 100% official) structure that will at least
+ * highlight the main pattern. You can expand as needed.
+ */
+function buildLss(groups, questions, answers) {
+  // Typically you'd have many more sections. We'll produce the core ones:
+  //  - <answers> + <answer_l10ns>
+  //  - <groups> + <group_l10ns>
+  //  - <questions> + <question_l10ns>
+  // We’ll also produce a skeleton <document> wrapper.
+
+  // We need some unique sid for the survey
+  const surveyId = 999999;
+
+  // Convert groups → <groups> + <group_l10ns>
+  let groupRows = '';
+  let groupL10nRows = '';
+  groups.forEach((grp, index) => {
+    groupRows += `
+      <row>
+        <gid><![CDATA[${grp.gid}]]></gid>
+        <sid><![CDATA[${surveyId}]]></sid>
+        <group_order><![CDATA[${index+1}]]></group_order>
+      </row>`;
+    groupL10nRows += `
+      <row>
+        <id><![CDATA[${5000 + index}]]></id>
+        <gid><![CDATA[${grp.gid}]]></gid>
+        <group_name><![CDATA[${grp.name}]]></group_name>
+        <description><![CDATA[]]></description>
+        <language><![CDATA[en]]></language>
+        <sid><![CDATA[${surveyId}]]></sid>
+        <group_order><![CDATA[${index+1}]]></group_order>
+      </row>`;
+  });
+
+  // Convert questions → <questions> + <question_l10ns>
+  let questionRows = '';
+  let questionL10nRows = '';
+  questions.forEach((q, index) => {
+    questionRows += `
+      <row>
+        <qid><![CDATA[${q.qid}]]></qid>
+        <parent_qid><![CDATA[0]]></parent_qid>
+        <sid><![CDATA[${surveyId}]]></sid>
+        <gid><![CDATA[${q.gid}]]></gid>
+        <type><![CDATA[${q.lsType}]]></type>
+        <title><![CDATA[Q${q.qid}]]></title>
+        <other><![CDATA[N]]></other>
+        <mandatory><![CDATA[${q.mandatory}]]></mandatory>
+        <question_order><![CDATA[${index+1}]]></question_order>
+        <scale_id><![CDATA[0]]></scale_id>
+        <relevance><![CDATA[1]]></relevance>
+      </row>`;
+    // question_l10ns
+    questionL10nRows += `
+      <row>
+        <id><![CDATA[${6000 + index}]]></id>
+        <qid><![CDATA[${q.qid}]]></qid>
+        <question><![CDATA[${q.text}]]></question>
+        <help/>
+        <language><![CDATA[en]]></language>
+      </row>`;
+  });
+
+  // Convert answers → <answers> + <answer_l10ns>
+  let answerRows = '';
+  let answerL10nRows = '';
+  const ansMap = {}; // track sortorders by qid
+  answers.forEach((ans) => {
+    if (!ansMap[ans.qid]) ansMap[ans.qid] = 0;
+    const sort = ansMap[ans.qid]++;
+    answerRows += `
+      <row>
+        <aid><![CDATA[${ans.aid}]]></aid>
+        <qid><![CDATA[${ans.qid}]]></qid>
+        <code><![CDATA[${ans.code}]]></code>
+        <sortorder><![CDATA[${sort}]]></sortorder>
+        <assessment_value><![CDATA[0]]></assessment_value>
+        <scale_id><![CDATA[0]]></scale_id>
+      </row>`;
+    answerL10nRows += `
+      <row>
+        <id><![CDATA[${7000 + ans.aid}]]></id>
+        <aid><![CDATA[${ans.aid}]]></aid>
+        <answer><![CDATA[${ans.text}]]></answer>
+        <language><![CDATA[en]]></language>
+      </row>`;
+  });
+
+  // Build final XML:
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<document>
+  <LimeSurveyDocType>Survey</LimeSurveyDocType>
+  <DBVersion>359</DBVersion>
+  
+  <languages>
+    <language>en</language>
+  </languages>
+
+  <answers>
+    <fields>
+      <fieldname>aid</fieldname>
+      <fieldname>qid</fieldname>
+      <fieldname>code</fieldname>
+      <fieldname>sortorder</fieldname>
+      <fieldname>assessment_value</fieldname>
+      <fieldname>scale_id</fieldname>
+    </fields>
+    <rows>${answerRows}
+    </rows>
+  </answers>
+
+  <answer_l10ns>
+    <fields>
+      <fieldname>id</fieldname>
+      <fieldname>aid</fieldname>
+      <fieldname>answer</fieldname>
+      <fieldname>language</fieldname>
+    </fields>
+    <rows>${answerL10nRows}
+    </rows>
+  </answer_l10ns>
+
+  <groups>
+    <fields>
+      <fieldname>gid</fieldname>
+      <fieldname>sid</fieldname>
+      <fieldname>group_order</fieldname>
+    </fields>
+    <rows>${groupRows}
+    </rows>
+  </groups>
+  
+  <group_l10ns>
+    <fields>
+      <fieldname>id</fieldname>
+      <fieldname>gid</fieldname>
+      <fieldname>group_name</fieldname>
+      <fieldname>description</fieldname>
+      <fieldname>language</fieldname>
+      <fieldname>sid</fieldname>
+      <fieldname>group_order</fieldname>
+    </fields>
+    <rows>${groupL10nRows}
+    </rows>
+  </group_l10ns>
+  
+  <questions>
+    <fields>
+      <fieldname>qid</fieldname>
+      <fieldname>parent_qid</fieldname>
+      <fieldname>sid</fieldname>
+      <fieldname>gid</fieldname>
+      <fieldname>type</fieldname>
+      <fieldname>title</fieldname>
+      <fieldname>other</fieldname>
+      <fieldname>mandatory</fieldname>
+      <fieldname>question_order</fieldname>
+      <fieldname>scale_id</fieldname>
+      <fieldname>relevance</fieldname>
+    </fields>
+    <rows>${questionRows}
+    </rows>
+  </questions>
+
+  <question_l10ns>
+    <fields>
+      <fieldname>id</fieldname>
+      <fieldname>qid</fieldname>
+      <fieldname>question</fieldname>
+      <fieldname>help</fieldname>
+      <fieldname>language</fieldname>
+    </fields>
+    <rows>${questionL10nRows}
+    </rows>
+  </question_l10ns>
+
+  <!-- A very minimal <surveys> block -->
+  <surveys>
+    <fields>
+      <fieldname>sid</fieldname>
+      <fieldname>admin</fieldname>
+      <fieldname>language</fieldname>
+    </fields>
+    <rows>
+      <row>
+        <sid><![CDATA[${surveyId}]]></sid>
+        <admin><![CDATA[admin]]></admin>
+        <language><![CDATA[en]]></language>
+      </row>
+    </rows>
+  </surveys>
+
+  <surveys_languagesettings>
+    <fields>
+      <fieldname>surveyls_survey_id</fieldname>
+      <fieldname>surveyls_language</fieldname>
+      <fieldname>surveyls_title</fieldname>
+    </fields>
+    <rows>
+      <row>
+        <surveyls_survey_id><![CDATA[${surveyId}]]></surveyls_survey_id>
+        <surveyls_language><![CDATA[en]]></surveyls_language>
+        <surveyls_title><![CDATA[My CSV Imported Survey]]></surveyls_title>
+      </row>
+    </rows>
+  </surveys_languagesettings>
+
+</document>
+`;
+  return xml;
+}
+
+// Download functionality
+document.getElementById('downloadBtn').addEventListener('click', function() {
+  const textToSave = document.getElementById('lssOutput').value;
+  const blob = new Blob([textToSave], { type: "application/xml;charset=utf-8" });
+  const blobUrl = URL.createObjectURL(blob);
+
+  const tempLink = document.createElement('a');
+  tempLink.href = blobUrl;
+  tempLink.download = "my_survey.lss";
+  document.body.appendChild(tempLink);
+  tempLink.click();
+  document.body.removeChild(tempLink);
+});
+</script>
+
+</body>
+</html>

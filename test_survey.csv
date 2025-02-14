@@ -1,0 +1,17 @@
+type,question,question_options,construct,question_type,question_group
+group,Pre Test,,,,Pre Test
+question,When ordering something off the menu, I imagine how good it will taste,,Anticipatory & Consummatory Pleasure,7-point Likert scale,Pre Test
+question,What type of cuisine do you prefer?,,Cuisine Preference,MCQ,Pre Test
+mcq_option,,Italian,,, 
+mcq_option,,Chinese,,, 
+mcq_option,,Mexican,,, 
+mcq_option,,Indian,,, 
+group,Demographics,,,,Demographics
+question,What is your age?,,Age,Numerical,Demographics
+question,What is your name?,,Personal Information,Text,Demographics
+group,Feedback,,,,Feedback
+question,Overall, how satisfied are you with our service?,,Customer Satisfaction,7-point Likert scale,Feedback
+question,Would you recommend us to a friend?,,Recommendation,MCQ,Feedback
+mcq_option,,Yes,,, 
+mcq_option,,No,,, 
+question,Any additional comments?,,Comments,Text,Feedback
